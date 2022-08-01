@@ -82,7 +82,7 @@ class SharedMLP(nn.Module):
         return x
 
 
-class MutualCNN(nn.Module):
+class MutualCNN(nn.Module): # 这里在我看来，还只是在弄CNN，看上去没什么特殊的。用于下面的联合
     def __init__(
         self,
         input_proj: nn.Module,
@@ -135,7 +135,7 @@ class MutualCNN(nn.Module):
         return pred
 
 
-class JointModel(nn.Module):
+class JointModel(nn.Module): # 按照名字，这里应该要和VIT结合了才对
     def __init__(
         self,
         vit: ViT,
@@ -144,25 +144,25 @@ class JointModel(nn.Module):
         norm_cfg: Dict[str, Any],
         activation: str = "relu",
         dropout: float = None,
-        extract_cnn: List[str] = list(),
-        extract_vit: List[str] = list(),
-        down_sample_layers: List[int] = list(),
-        cnn_pre_norm: bool = True,
+        extract_cnn: List[str] = list(), # 这里的值具体是什么，得看JointModel初始化的值
+        extract_vit: List[str] = list(), # 这里有提取出来的vit
+        down_sample_layers: List[int] = list(), # 下采样层
+        cnn_pre_norm: bool = True, # cnn的预备训练的归一化？
         **kwargs
     ):
         super().__init__()
-        # input embedding layer
-        input_proj = get_input_proj(embed_dim, input_proj_cfg)
-        # share layers
-        mhsa = [SharedConv(mhsa) for mhsa in vit.get_mhsa()]
-        mlp = [SharedMLP(mlp) for mlp in vit.get_mlp()]
+        # input embedding layer 输入的embedding
+        input_proj = get_input_proj(embed_dim, input_proj_cfg) # 根据输入的embedding和input的cfg，得到input_proj
+        # share layers 
+        mhsa = [SharedConv(mhsa) for mhsa in vit.get_mhsa()] # 把vit中的get_mhsa拿出来，放进sharedConv函数中，得到了列表mhsa
+        mlp = [SharedMLP(mlp) for mlp in vit.get_mlp()] # mlp也同理，从vit中拿。
         norm_fn = Norm_fn(norm_cfg)
 
-        cnn = MutualCNN(
+        cnn = MutualCNN( # 这里是直接调用上面MutualCNN（相互CNN），很好理解，和论文里面一样，让它们两个保持一致
             input_proj=input_proj,
-            conv_blocks=nn.ModuleList(mhsa),
-            mlp_blocks=nn.ModuleList(mlp),
-            embed_dim=embed_dim,
+            conv_blocks=nn.ModuleList(mhsa), # 把上面mhsa和mlp的block拿下来，当作CNN的卷积
+            mlp_blocks=nn.ModuleList(mlp), # 和CNN的mlp，让他们层数一致
+            embed_dim=embed_dim, 
             num_classes=vit.num_classes,
             norm_fn=norm_fn,
             activation=activation,
@@ -170,23 +170,24 @@ class JointModel(nn.Module):
             down_sample_layers=down_sample_layers,
             pre_norm=cnn_pre_norm
         )
-        self.models = nn.ModuleDict()
-        self.extractors: Dict[str, MidExtractor] = OrderedDict()
+        self.models = nn.ModuleDict() # 
+        self.extractors: Dict[str, MidExtractor] = OrderedDict() # 声明一个有序字典，其中key为str，value为MidExtractor
         self.models["cnn"] = cnn
-        self.extractors["cnn"] = MidExtractor(self.models["cnn"], extract_cnn)
+        self.extractors["cnn"] = MidExtractor(self.models["cnn"], extract_cnn) # 这是提取出来的cnn的东西，这边的话，声明后的默认值为
         self.models["vit"] = vit
-        self.extractors["vit"] = MidExtractor(self.models["vit"], extract_vit)
+        self.extractors["vit"] = MidExtractor(self.models["vit"], extract_vit) # 这是提取出来的vit的东西，可以这么理解？
 
-    def forward(self, x: torch.Tensor):
-        preds = OrderedDict()
-        mid_features = OrderedDict()
-        for name, model in self.models.items():
-            preds[name] = model(x)
-            mid_features[name] = self.extractors[name].features
+    def forward(self, x: torch.Tensor): # 我个人可以认为这个x就是输入的图片。
+        preds = OrderedDict() # 声明一个有序字典
+        mid_features = OrderedDict() # 也声明一个中间态的有序字典
+        for name, model in self.models.items(): # 即由cnn和vit组成，其中
+            preds[name] = model(x) # 当name为cnn时，得到一个preds[cnn]，当name为vit时，得到preds[vit]。所以最后结果时得到[preds[cnn],preds[vit]]
+            mid_features[name] = self.extractors[name].features # 这是中间态，看样子时调用MidExtractor.features。这里为啥没将x输入进来？我以为这里应该会保存中间态的特征图数值，但是按照它写的代码，我目前感觉好像它
+            # 只实现了拿出默认值的feature的效果，莫非它在执行model的时候，就实现了这个feature的效果？
         ret = {
             "preds": preds,
             "mid_features": mid_features
-        }
+        } # 得到一个ret的list，其中preds由[preds[cnn],preds[vit]]组成。mid_features由 两个中间态的[MidExtractor(self.models["cnn"], extract_cnn),MidExtractor(self.models["vit"], extract_vit)]组成。
         return ret
 
 
